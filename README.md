@@ -1,4 +1,6 @@
 # pytorch-to-onnx-checker
 
-This repo was created by `air-python-project-generator`.
-The purpose is to create a unified, minimalistic, development-ready repository for AIR development.
+A basic PyTorch to Onnx checker that is designed to
+- Check the output difference between each nn.Module during forward pass.
+
+For now, will start off small and maybe improve features based on needs
