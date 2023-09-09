@@ -1,4 +1,4 @@
-name: Test
+name: Run pytest
 
 on:
   push:
@@ -7,60 +7,28 @@ on:
     branches: [main]
   workflow_call:
 
-env:
-  DOCKER_CONTAINER_NAME: ${USER}_pytorch-to-onnx-checker_github_action
-
 jobs:
   run_tests:
-    # For now, we will only add self-hosted
-    # Feel free to add other hosts such as [X64, aip]
+    name: Setup ${{ matrix.python }} ${{ matrix.os }}
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.8", "3.9", "3.10"]
     steps:
-      -
-        name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-      -
-        name: Checkout
+      - name: Checkout
         uses: actions/checkout@v3
-      -
-        name: Login to DockerHub
-        uses: docker/login-action@v2
-      -
-        name: Build docker image
-        uses: docker/build-push-action@v3
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v3
         with:
-          load: true
-          context: .
-          tags: pt2onnx_checker:latest
-          target: check
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements/base.txt -r requirements/check.txt
       -
         name: Run tests
         run: |
-          # Start docker container
-          # IMPORTANT: Do not use volume mounting when working on local-host
-          # as that can potentially create unexpected side-effects where
-          # the user creating files inside the docker image is different to
-          # the user running the Github actions, resulting in files remaining
-          docker run --name ${{ env.DOCKER_CONTAINER_NAME }} \
-            -itd \
-            -w /project \
-            pt2onnx_checker:latest \
-            bash
-          # Copy current repository into docker
-          # Avoid volume mounting especially if working with self-hosted devices
-          docker cp ${{ github.workspace }} ${{ env.DOCKER_CONTAINER_NAME }}:/project
-          # Run tests
-          docker exec ${{ env.DOCKER_CONTAINER_NAME }} \
-            bash -e -c "pytest --cov pytorch-to-onnx-checker --cov-report=xml"
-      -
-        name: Retrieve codecov results
-        run: |
-          docker cp ${{ env.DOCKER_CONTAINER_NAME }}:/project/coverage.xml .
-      -
-        name: Stop and cleanup docker container
-        run: |
-          docker stop ${{ env.DOCKER_CONTAINER_NAME }}
-          docker rm ${{ env.DOCKER_CONTAINER_NAME }}
+          pytest --cov tests --cov-report=xml
       -
         name: Upload coverage to Codecov
         uses: codecov/codecov-action@v3

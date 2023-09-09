@@ -25,7 +25,9 @@ jobs:
           fetch-depth: 0
       -
         name: resolve dubious ownership of the repo
-        run: git config --global --add safe.directory /__w/pytorch-to-onnx-checker/pytorch-to-onnx-checker
+        run: |
+          git config --global --add safe.directory
+          /__w/pytorch-to-onnx-checker/pytorch-to-onnx-checker
       -
         name: install build dependencies
         run: |
@@ -38,7 +40,8 @@ jobs:
       -
         name: get the resulting package version
         run: |
-          echo "VERSION=$(echo $(ls dist/*.whl) | cut -d'/' -f2 | cut -d'-' -f2)" >> $GITHUB_ENV
+          echo "VERSION=$(echo $(ls dist/*.whl)
+          | cut -d'/' -f2 | cut -d'-' -f2)" >> $GITHUB_ENV
       -
         name: check if version and release/tag name matches
         if: env.VERSION != github.ref_name
