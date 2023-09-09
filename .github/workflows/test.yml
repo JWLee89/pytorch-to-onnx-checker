@@ -1,4 +1,4 @@
-name: Test
+name: Run pytest
 
 on:
   push:
@@ -7,25 +7,28 @@ on:
     branches: [main]
   workflow_call:
 
-env:
-  DOCKER_CONTAINER_NAME: ${USER}_pytorch-to-onnx-checker_github_action
-
 jobs:
   run_tests:
-    # For now, we will only add self-hosted
-    # Feel free to add other hosts such as [X64, aip]
+    name: Setup ${{ matrix.python }} ${{ matrix.os }}
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.8", "3.9", "3.10"]
     steps:
-      -
-        name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-      -
-        name: Checkout
+      - name: Checkout
         uses: actions/checkout@v3
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v3
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements/base.txt -r requirements/check.txt
       -
         name: Run tests
         run: |
-          "pytest --cov pytorch-to-onnx-checker --cov-report=xml"
+          pytest --cov tests --cov-report=xml
       -
         name: Upload coverage to Codecov
         uses: codecov/codecov-action@v3

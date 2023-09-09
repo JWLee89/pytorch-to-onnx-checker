@@ -3,5 +3,5 @@
 # I am currently working on finding root cause
 # of large difference for torch 1.8.1.
 # Please feel free to use other versions as see fit.
-torch==1.8.1
-torchvision==0.9.1
+torch
+torchvision
