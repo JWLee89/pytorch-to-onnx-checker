@@ -14,8 +14,9 @@ E.g. [ONNX] Modified onnx-related tests
 
 <!--- List items where further discussion is needed --->
 
-\[ \] Did you write tests for each of the new features added?
-\[ \] Are you writing easy to debug code?
-\[ \] Are your utility functions only doing the thing it is supposed to do?
-\[ \] Is your code easy to follow?
-\[ \] Is your PR size reasonable? E.g. Please do not submit a PR with a 1000 line diff.
+- ⬜️ Did you write tests for each of the new features added?
+- ⬜️ Are you writing easy to debug code?
+- ⬜️ Are your utility functions only doing the thing it is supposed to do?
+- ⬜️ Is your code easy to follow?
+- ⬜️ Is your PR size reasonable? E.g. Please do not submit a PR with a 1000 line diff.
+- ✅ Did you intentionally submit a PR?
