@@ -1,0 +1,7 @@
+# Add dependencies required form making
+# checks / tests locally or in the CI Pipeline
+pytest
+pytest-cov
+pytest-lazy-fixture
+pre-commit
+interrogate

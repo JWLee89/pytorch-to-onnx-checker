@@ -1,0 +1,13 @@
+codecov:
+  require_ci_to_pass: true
+  notify:
+    wait_for_ci: true
+
+coverage:
+  status:
+    project:
+      default:
+        target: 0%  # we may want to increase this
+    patch:
+      default:
+        target: 0%  # we may want to increase this
