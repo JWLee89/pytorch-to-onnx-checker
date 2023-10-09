@@ -5,3 +5,7 @@
 # Please feel free to use other versions as see fit.
 torch
 torchvision
+
+# For onnx inference
+onnx
+onnxruntime
