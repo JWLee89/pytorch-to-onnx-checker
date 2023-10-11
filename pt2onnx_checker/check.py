@@ -2,12 +2,14 @@ import copy
 import logging
 import shutil
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Any, Callable, Dict, List, Tuple
 
 import numpy as np
 import onnxruntime
 import torch
 import torch.nn as nn
+
+from pt2onnx_checker.stats import get_stats
 
 
 class PyTorchOnnxChecker:
@@ -34,26 +36,21 @@ class PyTorchOnnxChecker:
         # statistics
         self._module_to_stats = {}
 
-    @staticmethod
-    def _deep_copy_model(pytorch_model: nn.Module) -> nn.Module:
-        """_summary_
-
-        Args:
-            pytorch_model (nn.Module): _description_
+    def get_check_results(self) -> Dict[str, Any]:
+        """Get the check results.
 
         Returns:
-            nn.Module: _description_
+            Dict[str, Any]: The check results.
         """
-        pytorch_model = copy.deepcopy(pytorch_model)
-        pytorch_model.eval()
-        return pytorch_model
+        return self._module_to_stats
 
-    def _group_by_module_types(self) -> Dict[str, Dict]:
-        """_summary_"""
-        pass
+    def check_named_modules(self, pytorch_model: nn.Module, input_tensor: torch.Tensor) -> None:
+        """Run a scan across all inner nn.Modules and create onnx representations for each module.
 
-    def check_named_modules(self, pytorch_model: nn.Module, input_tensor: torch.Tensor):
-        """_summary_
+        Then, compare
+        the outputs from onnxruntime forward vs pytorch and compute statistics.
+        These statistics can provide a good indication on which operation shows
+        the largest difference.
         Args:
             pytorch_model (nn.Module): The PyTorch module to check.
         """
@@ -65,19 +62,20 @@ class PyTorchOnnxChecker:
         metdata_folder_path.mkdir(exist_ok=True, parents=True)
 
         # Create deep copy because we need to add hooks
-        pytorch_model = self._deep_copy_model(pytorch_model)
+        pytorch_model = copy.deepcopy(pytorch_model)
+        pytorch_model.eval()
 
         # We want all input shapes
         for module_name, module in pytorch_model.named_modules():
             module.register_forward_hook(
-                get_input_shape_forward_hook(self._input_dict, module_name)
+                get_dummy_input_forward_hook(self._input_dict, module_name)
             )
         # After adding hook, forward tensor to trigger hook
         pytorch_model(input_tensor)
         # Create another deep copy because need to remove hooks
         # Ideally, just removing hooks is more efficient, but because
         # I want to get this working quickly
-        pytorch_model = self._deep_copy_model(pytorch_model)
+        pytorch_model = copy.deepcopy(pytorch_model)
 
         # Create models
         for module_name, module in pytorch_model.named_modules():
@@ -96,7 +94,11 @@ class PyTorchOnnxChecker:
         for module_name, module in pytorch_model.named_modules():
             if module_name in self._input_dict:
                 module.register_forward_hook(
-                    onnx_validation_hook(metdata_folder_path / f"{module_name}.onnx", module_name)
+                    onnx_validation_hook(
+                        metdata_folder_path / f"{module_name}.onnx",
+                        module_name,
+                        self._module_to_stats,
+                    )
                 )
 
         # Call forward to trigger hook
@@ -107,85 +109,114 @@ class PyTorchOnnxChecker:
             shutil.rmtree(metdata_folder_path, ignore_errors=False, onerror=None)
 
 
-def get_stats(ort_output: np.ndarray, pt_output: np.ndarray) -> Dict:
-    output = {}
-    absolute_diff = np.abs(ort_output - pt_output)
-    max_absolute_diff = np.max(absolute_diff)
-    # index_max = np.unravel_index(absolute_diff.argmax(), absolute_diff.shape)
-    mean_absolute_diff = np.mean(absolute_diff)
-    output["max_absolute_diff"] = max_absolute_diff
-    output["mean_absolute_diff"] = mean_absolute_diff
-    output["min_absolute_diff"] = np.min(absolute_diff)
-    return output
-
-
-def process_dict(pt_output: Dict, ort_output: list):
-    if list(pt_output.keys()):
-        for i, (key, value) in enumerate(pt_output.items()):
+def convert_entries_to_np_array(
+    pt_output: Dict, ort_output: List[np.ndarray], output_list: List[np.ndarray]
+):
+    if any(pt_output):
+        for i, value in enumerate(pt_output.values()):
+            # Convert tensors to numpy
             if isinstance(value, torch.Tensor):
                 value = value.detach().cpu().numpy()
-                pt_output[key] = value
+                output_list.append(value)
             elif isinstance(value, Dict):
-                pt_output[key] = process_dict(value, ort_output[i])
+                convert_entries_to_np_array(value, ort_output[i])
             elif not isinstance(value, np.ndarray):
                 raise ValueError(f"Unsupported type: {type(value)}")
-            # ORT iterates by index
-            get_stats(ort_output[i], value)
+
+
+def get_ort_inferencer(tensor: torch.Tensor, onnx_file_path: str) -> onnxruntime.InferenceSession:
+    """Get the onnx runtime inference session. The execution provider is based on the device of the
+    tensor passed in. If a cuda tensor is passed in,we will use CUDAExecutionProvider.
+
+    Args:
+        tensor (torch.Tensor): The pytorch tensor used to determine
+        execution provider
+        onnx_file_path (str): The location of the onnx file
+
+    Returns:
+        onnxruntime.InferenceSession: onnxruntime object used for inference
+    """
+    device = "CUDA" if tensor.is_cuda else "CPU"
+    providers = [f"{device}ExecutionProvider"]
+    return onnxruntime.InferenceSession(onnx_file_path, providers=providers)
 
 
 @torch.no_grad()
-def onnx_validation_hook(onnx_runtime_path: str, module_name: str):
-    def inner(module: nn.Module, inputs: Tuple[torch.Tensor], outputs: torch.Tensor):
+def onnx_validation_hook(
+    onnx_file_path: str, module_name: str, module_name_to_stats_dict: Dict[str, Any]
+) -> Callable:
+    """The validation logic that runs during forward pass, comparing PyTorch and OnnxRuntime
+    outputs.
+
+    Args:
+        onnx_file_path (str): The location of the onnx file to load
+        module_name (str): The current PyTorch module name + call count with delimiter
+        module_name_to_stats_dict (Dict): The dictionary that stores the statistics
+    """
+
+    def inner(_: nn.Module, inputs: Tuple[torch.Tensor], outputs: torch.Tensor):
         """The onnx validation hook.
 
         Args:
-            module (nn.Module): _description_
-            inputs (Tuple[torch.Tensor]): _description_
+            inputs (Tuple[torch.Tensor]): A tuple of input tensors
             outputs (torch.Tensor): For simplicity, let's assume
             that all outputs are tensors
         """
-        # load model
-        ort_model = onnxruntime.InferenceSession(onnx_runtime_path)
+        ort_inferencer = get_ort_inferencer(outputs, onnx_file_path)
 
         # compute ONNX Runtime output prediction
         # Compare with pytorch module
-        ort_output = ort_model.run(
+        ort_output = ort_inferencer.run(
             None,
             {
                 input_data.name: input_tensor.detach().cpu().numpy()
-                for input_data, input_tensor in zip(ort_model.get_inputs(), inputs)
+                for input_data, input_tensor in zip(ort_inferencer.get_inputs(), inputs)
             },
         )
+
+        # Some models can output dictionaries.
         if isinstance(outputs, Dict):
-            process_dict(outputs, ort_output)
-
+            np_converted_outputs = []
+            convert_entries_to_np_array(outputs, ort_output, np_converted_outputs)
         elif isinstance(outputs, torch.Tensor):
-            pt_output = outputs.detach().cpu().numpy()
-            stats = get_stats(ort_output, pt_output)
-        print(f"Module name: {module_name}, stats: {stats}")
+            np_converted_outputs = outputs.detach().cpu().numpy()
 
-        # output = {}
-        # output_dict[name] = output
-        # output["mean"] = param.mean().detach().item()
-        # output["std"] = param.std().detach().item()
-        # output["max"] = param.max().detach().item()
-        # output["min"] = param.min().detach().item()
+        stats = get_stats(ort_output, np_converted_outputs)
+        if module_name in module_name_to_stats_dict:
+            module_name_to_stats_dict[module_name].append(stats)
+        else:
+            module_name_to_stats_dict[module_name] = [stats]
 
     return inner
 
 
 @torch.no_grad()
-def get_input_shape_forward_hook(input_dict: Dict[str, torch.Tensor], module_name: str):
-    def inner(module: nn.Module, inputs: Tuple[torch.Tensor], outputs: torch.Tensor):
-        """_summary_
+def get_dummy_input_forward_hook(
+    input_dict: Dict[str, torch.Tensor], module_name: str
+) -> Callable:
+    """Store torch.randn tensors that are later on used to infer.
+
+    Args:
+        input_dict (Dict[str, torch.Tensor]): An input dict containing the
+        following values:
+            key: module name
+            value: torch.randn tensor
+        module_name (str): The name of the current module being evaluated
+
+    Returns:
+        Callable: A function that will be called during forward pass.
+    """
+
+    def inner(_: nn.Module, inputs: Tuple[torch.Tensor], __: torch.Tensor) -> None:
+        """During the forward pass, if the input is a tensor, we will create random tensors with
+        the same shape as the input tensor. This is needed when calling the torch.onnx.export
+        function.
 
         Args:
-            module (nn.Module): _description_
-            inputs (Tuple[torch.Tensor]): _description_
-            outputs (torch.Tensor): _description_
+            inputs (Tuple[torch.Tensor]): An input dictionary with string keys
+            and tensor values.
 
-        Returns:
-            _type_: _description_
+        Returns: None
         """
         # Get access to "self inside onnv validation hook"
         new_inputs = []
@@ -194,7 +225,8 @@ def get_input_shape_forward_hook(input_dict: Dict[str, torch.Tensor], module_nam
                 input_item = input_item.detach().cpu()
                 new_inputs.append(torch.randn(*input_item.shape))
 
-        # To prevent global module lock
+        # To prevent global module lock, we use random tensors,
+        # not the actual input tensors used in the forward pass
         input_data = (
             new_inputs[0]
             if len(new_inputs) == 1
